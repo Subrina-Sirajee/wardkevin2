@@ -1,0 +1,10 @@
+.
+├── main.py                     # Main application entry point and Facade
+├── ai_client_interface.py      # The abstract "contract" for all AI clients
+├── client_factory.py           # The factory for creating the correct AI client
+├── openai_client.py            # The specific client for OpenAI models
+├── gemini_client.py            # The specific client for Google Gemini models
+├── data_formatter.py           # Handles formatting data and prompts
+├── response_parser.py          # Parses the AI's text response into JSON
+├── .env                        # Stores our secret API keys
+└── wound.jpg                   # Example image for testing

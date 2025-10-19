@@ -22,6 +22,11 @@ class AIClientInterface(ABC):
         """Regenerates product recommendations based on a specific constraint."""
         pass
 
+    @abstractmethod
+    def get_healing_progress(self, pdf_path: str) -> Dict:
+        """Analyzes a multi-page PDF of wound history and returns a healing percentage."""
+        pass
+
     # @abstractmethod
     # def get_tissue_percentages_over_time(self, original_analysis: str, assessment_data: Dict, wound_location: str) -> Dict:
     #     """Generates a projection of tissue composition percentages over time."""

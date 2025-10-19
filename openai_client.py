@@ -5,6 +5,8 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from ai_client_interface import AIClientInterface
 from typing import Dict, List
+import base64
+import time
 
 class OpenAIClient(AIClientInterface):
     # ... (__init__ and clinical_protocol are fine)
@@ -144,11 +146,8 @@ class OpenAIClient(AIClientInterface):
         print("DEBUG: Sending request to OpenAI for image analysis...")
         return self._make_api_call(messages=messages, max_tokens=2000, temperature=0.2)
 
-    # In the OpenAIClient class:
 
-    # In the OpenAIClient class in openai_client.py:
-
-    def expand_treatment_plan(self, original_analysis: str, assessment_data: Dict, wound_location: str) -> Dict:
+    def expand_treatment_plan(self, original_analysis: str) -> Dict:
         """Generates an expanded treatment plan and returns it as a structured JSON object."""
         try:
             # Safely extract the initial, brief treatment plan from the first analysis
@@ -175,7 +174,7 @@ class OpenAIClient(AIClientInterface):
 
             # Build the full prompt for the AI
             expand_prompt = f"""
-            Based on the original treatment plan and clinical context below, provide a comprehensive expanded treatment plan.
+            Based on the original treatment plan below, provide a comprehensive expanded treatment plan.
             You MUST return a single, valid JSON object and nothing else. Do not include any introductory text or markdown formatting.
             The JSON object must have three keys: "recommendations" (a list of objects, each with "action" and "rationale"), "ongoing_care" (a string), and "patient_education" (a string).
 
@@ -189,10 +188,6 @@ class OpenAIClient(AIClientInterface):
 
             **Original Brief Treatment Plan:**
             {treatment_section}
-
-            **Clinical Context:**
-            - Wound Location: {wound_location}
-            - Health Risk Factors: {', '.join(assessment_data['patient_overview']['health_risk_factors'])}
             """
             
             # Prepare the messages for the API call
@@ -216,11 +211,6 @@ class OpenAIClient(AIClientInterface):
         except Exception as e:
             return {"success": False, "error": f"Error in OpenAI expand_treatment_plan: {str(e)}"}
 
-
-
-    # In the OpenAIClient class:
-
-    # In the OpenAIClient class in openai_client.py:
 
     def revise_products(self, original_analysis: str, revision_reason: str) -> Dict:
         """Revises product recommendations and returns them as a structured JSON object."""
@@ -289,68 +279,75 @@ class OpenAIClient(AIClientInterface):
             return {"success": False, "error": f"Error in OpenAI revise_products: {str(e)}"}
 
 
-    # def get_tissue_percentages_over_time(self, original_analysis: str, assessment_data: Dict, wound_location: str) -> Dict:
-    #     """Generates tissue composition percentages for a healing trajectory using OpenAI."""
-    #     try:
-    #         tissue_section_match = re.search(r'\*\*Wound Tissue Evaluation:\*\*(.*)', original_analysis, re.DOTALL)
-    #         if not tissue_section_match:
-    #             return {"success": False, "error": "Could not find 'Wound Tissue Evaluation' in the original analysis."}
-    #         tissue_section = tissue_section_match.group(1).strip()
+    def get_healing_progress(self, pdf_path: str) -> Dict:
+        """
+        Analyzes a PDF of wound history using the OpenAI Assistants API and a more nuanced prompt.
+        """
+        try:
+            # ... (The file upload and assistant creation logic is correct)
+            print(f"DEBUG: Uploading PDF {pdf_path} to OpenAI's file store...")
+            with open(pdf_path, "rb") as pdf_file:
+                uploaded_file = self.client.files.create(file=pdf_file, purpose='assistants')
+            print(f"DEBUG: PDF uploaded successfully. File ID: {uploaded_file.id}")
 
-    #         tissue_prompt = f"""
-    #         Based on the wound characteristics and clinical data provided, estimate the tissue composition percentages for a healing trajectory over 4 time points: Day 0 (initial), Day 7, Day 14, and Day 21.
+            assistant = self.client.beta.assistants.create(
+                name="Wound Healing Analyst",
+                instructions="You are a wound care specialist. Analyze the attached file which contains a wound's healing history. Respond with only a valid JSON object containing a single key: 'healing_progress_percentage'.",
+                model=self.model,
+                tools=[{"type": "file_search"}]
+            )
 
-    #         Current Wound Assessment:
-    #         {tissue_section}
+            # --- THIS IS THE NEW, MORE NUANCED PROMPT ---
+            nuanced_user_prompt = """
+            The attached PDF contains the complete history of a single wound, with the first page being the baseline.
+            Your task is to provide a nuanced 'Healing Progress Percentage' based on the LATEST image in the sequence.
 
-    #         Clinical Context:
-    #         - Wound Location: {wound_location}
-    #         - Health Risk Factors: {', '.join(assessment_data['patient_overview']['health_risk_factors'])}
-    #         - Clinical Notes: {assessment_data['clinical_assessment']['other_relevant_information']}
+            Use the following definitions for your calculation:
+            - 0% represents the initial state of the wound (the first image).
+            - 100% represents a fully healed state, characterized by a faint, pale, non-erythematous (not red) scar with fully restored skin integrity.
+            - A wound that is closed with sutures but still shows significant redness, swelling, or a prominent, fresh scar should be considered in an intermediate stage (e.g., 60-80%), NOT 100%.
+            - A wound that is smaller but still open with granulation tissue might be around 50%.
 
-    #         Provide realistic percentages for each tissue type (Granulation, Slough, Eschar, Epithelialization) at each time point.
-    #         Format EXACTLY as follows, with each day's percentages totaling 100%:
-    #         **Day 0:**
-    #         - Granulation: X%
-    #         - Slough: Y%
-    #         - Eschar: Z%
-    #         - Epithelialization: W%
-    #         **Day 7:**
-    #         ...and so on for Day 14 and Day 21.
-    #         """
-            
-    #         messages = [
-    #             {"role": "system", "content": "You are an expert wound care specialist. Provide realistic tissue composition percentages over time in the exact format requested."},
-    #             {"role": "user", "content": tissue_prompt}
-    #         ]
+            Analyze the LATEST image in the PDF and assess its state relative to the final goal of a fully mature, pale scar. Based on this, provide a single integer for the healing progress percentage.
+            """
+            # ------------------------------------------------
 
-    #         tissue_percentages = self._make_api_call(messages=messages, max_tokens=1000, temperature=0.1)
-    #         return {"success": True, "tissue_percentages_over_time": tissue_percentages}
-    #     except Exception as e:
-    #         return {"success": False, "error": f"Error in OpenAI get_tissue_percentages_over_time: {str(e)}"}
+            thread = self.client.beta.threads.create(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": nuanced_user_prompt, # Use the new prompt
+                        "attachments": [{"file_id": uploaded_file.id, "tools": [{"type": "file_search"}]}]
+                    }
+                ]
+            )
 
-    # def get_wound_summary(self, original_analysis: str, assessment_data: Dict, wound_location: str) -> Dict:
-    #     """Generates a concise wound summary using OpenAI."""
-    #     try:
-    #         summary_prompt = f"""
-    #         Based on the initial analysis and clinical data, provide a concise, professional wound summary.
-    #         Describe what can and cannot be determined from the available data.
+            # ... (The rest of the run, wait, and cleanup logic is correct and does not need to change)
+            run = self.client.beta.threads.runs.create(thread_id=thread.id, assistant_id=assistant.id)
 
-    #         Clinical Context:
-    #         - Wound Location: {wound_location}
-    #         - Clinical Findings: {assessment_data['clinical_assessment']['other_relevant_information']}
-    #         - Health Factors: {', '.join(assessment_data['patient_overview']['health_risk_factors'])}
-    #         - Initial AI Observations: {original_analysis}
+            print("DEBUG: Waiting for the AI assistant to complete the analysis...")
+            while run.status in ['queued', 'in_progress', 'cancelling']:
+                time.sleep(1)
+                run = self.client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
 
-    #         Generate a summary in the style of a clinical note.
-    #         """
-            
-    #         messages = [
-    #             {"role": "system", "content": "You are an expert wound care specialist. You write concise, clinical wound summaries that clearly state what can be assessed and what requires further evaluation."},
-    #             {"role": "user", "content": summary_prompt}
-    #         ]
+            if run.status == 'completed':
+                messages = self.client.beta.threads.messages.list(thread_id=thread.id)
+                response_text = messages.data[0].content[0].text.value
+                
+                cleaned_text = re.sub(r'```json\s*|\s*```', '', response_text).strip()
+                json_response = json.loads(cleaned_text)
+                
+                print("DEBUG: Cleaning up OpenAI resources...")
+                self.client.files.delete(uploaded_file.id)
+                self.client.beta.assistants.delete(assistant.id)
+                self.client.beta.threads.delete(thread.id)
+                
+                return {"success": True, "healing_progress_json": json_response}
+            else:
+                self.client.files.delete(uploaded_file.id)
+                self.client.beta.assistants.delete(assistant.id)
+                self.client.beta.threads.delete(thread.id)
+                raise Exception(f"Assistant run failed with status: {run.status}")
 
-    #         wound_summary = self._make_api_call(messages=messages, max_tokens=800, temperature=0.1)
-    #         return {"success": True, "wound_summary": wound_summary}
-    #     except Exception as e:
-    #         return {"success": False, "error": f"Error in OpenAI get_wound_summary: {str(e)}"}
+        except Exception as e:
+            return {"success": False, "error": f"Error in OpenAI get_healing_progress: {str(e)}"}

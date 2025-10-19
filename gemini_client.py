@@ -10,7 +10,7 @@ from typing import Dict, List
 class GeminiClient(AIClientInterface):
     """The concrete implementation of the AIClientInterface for Google's Gemini models."""
     
-    def __init__(self, api_key: str = None, model: str = "gemini-1.5-flash-latest"):
+    def __init__(self, api_key: str = None, model: str = "gemini-1.5-pro-latest"):
         load_dotenv()
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
@@ -100,14 +100,25 @@ class GeminiClient(AIClientInterface):
         Your final output MUST contain all seven of the specified sections, formatted correctly.
         """
 
-    def _make_api_call(self, prompt_parts: List, max_tokens: int, temperature: float) -> str:
-        """A single, reliable method for making all Gemini API calls."""
+    def _make_api_call(self, prompt_parts: List, max_tokens: int, temperature: float, is_json: bool = False) -> str:
+        """
+        A single, reliable method for making all Gemini API calls,
+        with robust checking for blocked responses.
+        """
         try:
-            generation_config = {"temperature": temperature, "max_output_tokens": max_tokens}
+            generation_config = {
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
+            }
+            if is_json:
+                generation_config["response_mime_type"] = "application/json"
+
             response = self.model.generate_content(prompt_parts, generation_config=generation_config)
             
-            if response.candidates and response.candidates[0].finish_reason.name != "STOP":
-                reason = response.candidates[0].finish_reason.name
+            if not response.candidates or response.candidates[0].finish_reason.name != "STOP":
+                reason = "UNKNOWN"
+                if response.candidates:
+                    reason = response.candidates[0].finish_reason.name
                 raise Exception(f"AI response was empty or blocked by the provider for reason: {reason}.")
 
             return response.text
@@ -213,3 +224,42 @@ class GeminiClient(AIClientInterface):
         
         except Exception as e:
             return {"success": False, "error": f"Error in Gemini revise_products: {str(e)}"}
+        
+
+    def get_healing_progress(self, pdf_path: str) -> Dict:
+        """
+        Analyzes a PDF of wound history using Gemini and returns a healing percentage.
+        This version correctly uses the _make_api_call helper.
+        """
+        try:
+            print(f"DEBUG: Reading PDF {pdf_path} for Gemini multimodal prompt...")
+            with open(pdf_path, "rb") as pdf_file:
+                pdf_bytes = pdf_file.read()
+
+            pdf_part = {"mime_type": "application/pdf", "data": pdf_bytes}
+
+            nuanced_user_prompt = """
+            You are a world-class wound care specialist. The attached PDF file contains the complete history of a single wound.
+            Your task is to provide a nuanced 'Healing Progress Percentage' based on the LATEST image and data in the sequence.
+            Use the following definitions: 0% is the initial state, 100% is a fully healed, pale scar. A sutured wound with redness is not 100%.
+            You MUST respond with only a single, valid JSON object containing one key: 'healing_progress_percentage'.
+            """
+            
+            prompt_parts = [nuanced_user_prompt, pdf_part]
+
+            # --- THE CRITICAL FIX ---
+            # Call the robust helper function instead of calling the model directly.
+            # We also tell the helper to expect a JSON response.
+            response_text = self._make_api_call(
+                prompt_parts=prompt_parts, 
+                max_tokens=1024, 
+                temperature=0.0,
+                is_json=True # Tell the helper to set the JSON mime type
+            )
+            # ------------------------
+            
+            json_response = json.loads(response_text)
+            return {"success": True, "healing_progress_json": json_response}
+
+        except Exception as e:
+            return {"success": False, "error": f"Error in Gemini get_healing_progress: {str(e)}"}
